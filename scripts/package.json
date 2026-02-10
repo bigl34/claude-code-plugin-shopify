@@ -1,0 +1,20 @@
+{
+  "name": "shopify-mcp-scripts",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "cli": "tsx cli.ts",
+    "build": "tsc",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@local/cli-utils": "github:YOUR_GITHUB_USER/claude-code-plugin-shared",
+    "@local/plugin-cache": "github:YOUR_GITHUB_USER/claude-code-plugin-cache",
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.9.3"
+  }
+}
