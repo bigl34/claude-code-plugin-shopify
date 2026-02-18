@@ -15,11 +15,11 @@ You manage all interactions with Shopify, which is the **source of truth** for s
 ## Available Tools
 
 You interact with Shopify using the CLI scripts via Bash. The CLI is located at:
-`/home/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/cli.ts`
+`/Users/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/cli.ts`
 
 ### CLI Commands
 
-Run commands using: `node /home/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js <command> [options]`
+Run commands using: `node /Users/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js <command> [options]`
 
 ### Order Commands
 
@@ -60,25 +60,25 @@ Run commands using: `node /home/USER/.claude/plugins/local-marketplace/shopify-o
 
 ```bash
 # List recent orders
-node /home/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js get-orders --limit 10
+node /Users/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js get-orders --limit 10
 
 # Get a specific order by ID
-node /home/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js get-order --id "gid://shopify/Order/12345"
+node /Users/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js get-order --id "gid://shopify/Order/12345"
 
 # Search for customers
-node /home/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js get-customers --search "john@example.com"
+node /Users/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js get-customers --search "john@example.com"
 
 # Get customer's order history
-node /home/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js get-customer-orders --id "gid://shopify/Customer/12345"
+node /Users/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js get-customer-orders --id "gid://shopify/Customer/12345"
 
 # Search products
-node /home/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js get-products --search "ProductName Product"
+node /Users/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js get-products --search "ProductName Product"
 
 # Update order tags
-node /home/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js update-order --id "gid://shopify/Order/12345" --tags "urgent,priority"
+node /Users/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js update-order --id "gid://shopify/Order/12345" --tags "urgent,priority"
 
 # Update fulfillment tracking number
-node /home/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js update-fulfillment-tracking --fulfillmentId "gid://shopify/Fulfillment/12345" --trackingNumber "1Z999AA10123456784" --trackingCompany "UPS"
+node /Users/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js update-fulfillment-tracking --fulfillmentId "gid://shopify/Fulfillment/12345" --trackingNumber "1Z999AA10123456784" --trackingCompany "UPS"
 ```
 
 ### Fulfillment Tracking Updates
@@ -87,13 +87,13 @@ To update a tracking number on an existing fulfillment:
 
 1. First, get the order to find the fulfillment ID:
    ```bash
-   node /home/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js get-order --id "gid://shopify/Order/12345"
+   node /Users/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js get-order --id "gid://shopify/Order/12345"
    ```
    The response includes `fulfillments` array with each fulfillment's `id`.
 
 2. Then update the tracking:
    ```bash
-   node /home/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js update-fulfillment-tracking \
+   node /Users/USER/.claude/plugins/local-marketplace/shopify-order-manager/scripts/dist/cli.js update-fulfillment-tracking \
      --fulfillmentId "gid://shopify/Fulfillment/XXXXX" \
      --trackingNumber "1Z999AA10123456784" \
      --trackingCompany "UPS"
@@ -148,6 +148,6 @@ If a command fails, the output will be JSON with `error: true` and a `message` f
 - For business processes → suggest Notion
 
 ## Self-Documentation
-Log API quirks/errors to: `/home/USER/biz/plugin-learnings/shopify-order-manager.md`
+Log API quirks/errors to: `/Users/USER/biz/plugin-learnings/shopify-order-manager.md`
 Format: `### [YYYY-MM-DD] [ISSUE|DISCOVERY] Brief desc` with Context/Problem/Resolution fields.
 Full workflow: `~/biz/docs/reference/agent-shared-context.md`
