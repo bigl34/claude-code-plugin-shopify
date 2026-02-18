@@ -91,25 +91,25 @@ node scripts/dist/cli.js get-orders
 
 ```bash
 # List recent orders
-node scripts/dist/cli.js get-orders --limit 10
+node /Users/USER/node scripts/dist/cli.js get-orders --limit 10
 
 # Get a specific order by ID
-node scripts/dist/cli.js get-order --id "gid://shopify/Order/12345"
+node /Users/USER/node scripts/dist/cli.js get-order --id "gid://shopify/Order/12345"
 
 # Search for customers
-node scripts/dist/cli.js get-customers --search "john@example.com"
+node /Users/USER/node scripts/dist/cli.js get-customers --search "john@example.com"
 
 # Get customer's order history
-node scripts/dist/cli.js get-customer-orders --id "gid://shopify/Customer/12345"
+node /Users/USER/node scripts/dist/cli.js get-customer-orders --id "gid://shopify/Customer/12345"
 
 # Search products
-node scripts/dist/cli.js get-products --search "ProductName Product"
+node /Users/USER/node scripts/dist/cli.js get-products --search "ProductName Product"
 
 # Update order tags
-node scripts/dist/cli.js update-order --id "gid://shopify/Order/12345" --tags "urgent,priority"
+node /Users/USER/node scripts/dist/cli.js update-order --id "gid://shopify/Order/12345" --tags "urgent,priority"
 
 # Update fulfillment tracking number
-node scripts/dist/cli.js update-fulfillment-tracking --fulfillmentId "gid://shopify/Fulfillment/12345" --trackingNumber "1Z999AA10123456784" --trackingCompany "UPS"
+node /Users/USER/node scripts/dist/cli.js update-fulfillment-tracking --fulfillmentId "gid://shopify/Fulfillment/12345" --trackingNumber "1Z999AA10123456784" --trackingCompany "UPS"
 ```
 
 ## How It Works
