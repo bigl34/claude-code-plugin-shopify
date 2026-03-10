@@ -236,6 +236,85 @@ const commands = {
     "Update tracking number on a fulfillment"
   ),
 
+  "create-fulfillment": createCommand(
+    z.object({
+      orderNumber: z.string().min(1).describe("Order number (e.g., 1234)"),
+      trackingNumber: z.string().min(1).describe("Tracking number"),
+      trackingCompany: z.string().optional().describe("Carrier name (default: UPS)"),
+      trackingUrl: z.string().optional().describe("Tracking URL"),
+      notifyCustomer: cliTypes.bool().optional().describe("Send email to customer (default: false)"),
+      lineItems: z.string().optional().describe("Items to fulfill as JSON: [{\"sku\":\"X\",\"quantity\":1}]"),
+    }),
+    async (args, client: ShopifyMCPClient) => {
+      const { orderNumber, trackingNumber, trackingCompany, trackingUrl, notifyCustomer, lineItems } = args as {
+        orderNumber: string;
+        trackingNumber: string;
+        trackingCompany?: string;
+        trackingUrl?: string;
+        notifyCustomer?: boolean;
+        lineItems?: string;
+      };
+      return client.createFulfillment(orderNumber, trackingNumber, {
+        trackingCompany,
+        trackingUrl,
+        notifyCustomer,
+        lineItems: lineItems ? JSON.parse(lineItems) : undefined,
+      });
+    },
+    "Create fulfillment with tracking for an order"
+  ),
+
+  "create-return": createCommand(
+    z.object({
+      orderNumber: z.string().min(1).describe("Order number (e.g., 14901)"),
+      lineItems: z.string().optional().describe("Items to return as JSON: [{\"sku\":\"X\",\"quantity\":1}]"),
+      returnReason: z.enum([
+        "DEFECTIVE", "WRONG_ITEM", "STYLE", "SIZE_TOO_SMALL",
+        "SIZE_TOO_LARGE", "UNWANTED", "OTHER", "UNKNOWN", "COLOR",
+      ]).optional().describe("Return reason (default: OTHER)"),
+      notify: cliTypes.bool().optional().describe("Send email to customer (default: false)"),
+    }),
+    async (args, client: ShopifyMCPClient) => {
+      const { orderNumber, lineItems, returnReason, notify } = args as {
+        orderNumber: string;
+        lineItems?: string;
+        returnReason?: string;
+        notify?: boolean;
+      };
+      return client.createReturn(orderNumber, {
+        lineItems: lineItems ? JSON.parse(lineItems) : undefined,
+        returnReason,
+        notifyCustomer: notify,
+      });
+    },
+    "Create a return for a fulfilled order"
+  ),
+
+  "create-reverse-delivery": createCommand(
+    z.object({
+      returnId: z.string().min(1).describe("Return GID (gid://shopify/Return/...)"),
+      trackingNumber: z.string().min(1).describe("Tracking number for the return shipment"),
+      trackingCompany: z.string().optional().describe("Carrier name (default: UPS)"),
+      trackingUrl: z.string().optional().describe("Tracking URL"),
+      labelUrl: z.string().optional().describe("URL of the return label image (PNG/PDF)"),
+    }),
+    async (args, client: ShopifyMCPClient) => {
+      const { returnId, trackingNumber, trackingCompany, trackingUrl, labelUrl } = args as {
+        returnId: string;
+        trackingNumber: string;
+        trackingCompany?: string;
+        trackingUrl?: string;
+        labelUrl?: string;
+      };
+      return client.createReverseDelivery(returnId, trackingNumber, {
+        trackingCompany,
+        trackingUrl,
+        labelUrl,
+      });
+    },
+    "Attach return shipping/tracking to a return"
+  ),
+
   // Pre-built cache commands
   ...cacheCommands<ShopifyMCPClient>(),
 };

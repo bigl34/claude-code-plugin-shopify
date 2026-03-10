@@ -499,6 +499,97 @@ export class ShopifyMCPClient {
   }
 
   /**
+   * Creates a fulfillment with tracking for an order.
+   *
+   * @param orderNumber - Order number (e.g., "1234" or "#ORD1234")
+   * @param trackingNumber - Tracking number
+   * @param options - Optional fulfillment details
+   * @param options.trackingCompany - Carrier name (default: UPS)
+   * @param options.trackingUrl - Tracking URL (auto-generated for UPS if omitted)
+   * @param options.notifyCustomer - Send email to customer (default: false)
+   * @param options.lineItems - Specific items to fulfill (omit for all)
+   * @returns Fulfillment result
+   *
+   * @invalidates order/*
+   */
+  async createFulfillment(
+    orderNumber: string,
+    trackingNumber: string,
+    options?: {
+      trackingCompany?: string;
+      trackingUrl?: string;
+      notifyCustomer?: boolean;
+      lineItems?: Array<{ sku: string; quantity: number }>;
+    }
+  ): Promise<any> {
+    const result = await this.callTool("create-fulfillment", {
+      orderNumber,
+      trackingNumber,
+      ...options,
+    });
+    cache.invalidatePattern(/^order/);
+    return result;
+  }
+
+  /**
+   * Creates a return for a fulfilled order.
+   *
+   * @param orderNumber - Order number (e.g., "14901" or "#ORD14901")
+   * @param options - Optional return details
+   * @param options.lineItems - Specific items to return by SKU (omit for all)
+   * @param options.returnReason - Return reason enum (default: OTHER)
+   * @param options.notifyCustomer - Send email to customer (default: false)
+   * @returns Return result with ID, status, and returned items
+   *
+   * @invalidates order/*
+   */
+  async createReturn(
+    orderNumber: string,
+    options?: {
+      lineItems?: Array<{ sku: string; quantity: number }>;
+      returnReason?: string;
+      notifyCustomer?: boolean;
+    }
+  ): Promise<any> {
+    const result = await this.callTool("create-return", {
+      orderNumber,
+      ...options,
+    });
+    cache.invalidatePattern(/^order/);
+    return result;
+  }
+
+  /**
+   * Attaches return shipping/tracking to a Shopify return.
+   *
+   * @param returnId - Return GID (gid://shopify/Return/...)
+   * @param trackingNumber - Tracking number for the return shipment
+   * @param options - Optional tracking details
+   * @param options.trackingCompany - Carrier name (default: UPS)
+   * @param options.trackingUrl - Tracking URL (auto-generated for UPS if omitted)
+   * @returns Reverse delivery result with ID and tracking info
+   *
+   * @invalidates order/*
+   */
+  async createReverseDelivery(
+    returnId: string,
+    trackingNumber: string,
+    options?: {
+      trackingCompany?: string;
+      trackingUrl?: string;
+      labelUrl?: string;
+    }
+  ): Promise<any> {
+    const result = await this.callTool("create-reverse-delivery", {
+      returnId,
+      trackingNumber,
+      ...options,
+    });
+    cache.invalidatePattern(/^order/);
+    return result;
+  }
+
+  /**
    * Updates an order's details.
    *
    * @param orderId - Shopify order ID
