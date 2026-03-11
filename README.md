@@ -30,7 +30,7 @@ Dedicated agent for Shopify e-commerce operations with isolated MCP access
 ## Quick Start
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USER/claude-code-plugin-shopify.git
+git clone https://github.com/bigl34/claude-code-plugin-shopify.git
 cd claude-code-plugin-shopify
 cp config.template.json config.json  # fill in your credentials
 cd scripts && npm install
