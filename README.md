@@ -3,7 +3,7 @@
 
 Dedicated agent for Shopify e-commerce operations with isolated MCP access
 
-![Version](https://img.shields.io/badge/version-1.1.15-blue) ![License: MIT](https://img.shields.io/badge/License-MIT-green) ![Node >= 18](https://img.shields.io/badge/node-%3E%3D18-brightgreen)
+![Version](https://img.shields.io/badge/version-1.3.0-blue) ![License: MIT](https://img.shields.io/badge/License-MIT-green) ![Node >= 18](https://img.shields.io/badge/node-%3E%3D18-brightgreen)
 
 ## Features
 
@@ -50,14 +50,6 @@ node scripts/dist/cli.js get-orders
    ```
 4. Ensure the MCP server binary is available on your system (see the service's documentation)
 
-## Configuration
-
-Copy `config.template.json` to `config.json` and fill in the required values:
-
-| Field | Placeholder |
-|-------|-------------|
-| `credentials_path` | `/path/to/your/credentials` |
-
 ## Available Commands
 
 ### Order Commands
@@ -99,25 +91,25 @@ Copy `config.template.json` to `config.json` and fill in the required values:
 
 ```bash
 # List recent orders
-node /Users/USER/node scripts/dist/cli.js get-orders --limit 10
+node $HOME/node scripts/dist/cli.js get-orders --limit 10
 
 # Get a specific order by ID
-node /Users/USER/node scripts/dist/cli.js get-order --id "gid://shopify/Order/12345"
+node $HOME/node scripts/dist/cli.js get-order --id "gid://shopify/Order/12345"
 
 # Search for customers
-node /Users/USER/node scripts/dist/cli.js get-customers --search "john@example.com"
+node $HOME/node scripts/dist/cli.js get-customers --search "john@example.com"
 
 # Get customer's order history
-node /Users/USER/node scripts/dist/cli.js get-customer-orders --id "gid://shopify/Customer/12345"
+node $HOME/node scripts/dist/cli.js get-customer-orders --id "gid://shopify/Customer/12345"
 
 # Search products
-node /Users/USER/node scripts/dist/cli.js get-products --search "ProductName Product"
+node $HOME/node scripts/dist/cli.js get-products --search "ProductName Product"
 
 # Update order tags
-node /Users/USER/node scripts/dist/cli.js update-order --id "gid://shopify/Order/12345" --tags "urgent,priority"
+node $HOME/node scripts/dist/cli.js update-order --id "gid://shopify/Order/12345" --tags "urgent,priority"
 
 # Update fulfillment tracking number
-node /Users/USER/node scripts/dist/cli.js update-fulfillment-tracking --fulfillmentId "gid://shopify/Fulfillment/12345" --trackingNumber "1Z999AA10123456784" --trackingCompany "UPS"
+node $HOME/node scripts/dist/cli.js update-fulfillment-tracking --fulfillmentId "gid://shopify/Fulfillment/12345" --trackingNumber "1Z999AA10123456784" --trackingCompany "UPS"
 ```
 
 ## How It Works

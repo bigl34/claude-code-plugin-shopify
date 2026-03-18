@@ -623,6 +623,39 @@ export class ShopifyMCPClient {
   // ============================================
 
   /**
+   * Updates tracking/label on an existing reverse delivery.
+   *
+   * @param reverseDeliveryId - Reverse delivery GID (gid://shopify/ReverseDelivery/...)
+   * @param trackingNumber - New tracking number
+   * @param options - Optional tracking details
+   * @param options.trackingCompany - Carrier name (default: UPS)
+   * @param options.trackingUrl - Tracking URL (auto-generated for UPS if omitted)
+   * @param options.labelUrl - URL of the return label image
+   * @param options.notifyCustomer - Send notification email (default: false)
+   * @returns Updated reverse delivery with tracking info
+   *
+   * @invalidates order/*
+   */
+  async updateReverseDeliveryShipping(
+    reverseDeliveryId: string,
+    trackingNumber: string,
+    options?: {
+      trackingCompany?: string;
+      trackingUrl?: string;
+      labelUrl?: string;
+      notifyCustomer?: boolean;
+    }
+  ): Promise<any> {
+    const result = await this.callTool("update-reverse-delivery-shipping", {
+      reverseDeliveryId,
+      trackingNumber,
+      ...options,
+    });
+    cache.invalidatePattern(/^order/);
+    return result;
+  }
+
+  /**
    * Gets the configured store domain.
    *
    * @returns Store domain (e.g., "mystore.myshopify.com")
