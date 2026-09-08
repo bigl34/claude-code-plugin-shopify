@@ -3,15 +3,17 @@
 
 Dedicated agent for Shopify e-commerce operations with isolated MCP access
 
-![Version](https://img.shields.io/badge/version-1.3.3-blue) ![License: MIT](https://img.shields.io/badge/License-MIT-green) ![Node >= 18](https://img.shields.io/badge/node-%3E%3D18-brightgreen)
+![Version](https://img.shields.io/badge/version-1.11.0-blue) ![License: MIT](https://img.shields.io/badge/License-MIT-green) ![Node >= 18](https://img.shields.io/badge/node-%3E%3D18-brightgreen)
 
 ## Features
 
 - Order
-- **get-orders** — List recent orders
+- **get-orders** — List/search orders (single page)
+- **get-all-orders** — List/search orders across all pages (auto-paginated)
 - **get-order** — Get order by ID
 - **update-order** — Update order details
-- **update-fulfillment-tracking** — Update fulfillment tracking
+- **create-fulfillment** — Fulfill an order with optional tracking
+- **update-fulfillment-tracking** — Update or clear fulfillment tracking
 - Customer
 - **get-customers** — Search customers
 - **update-customer** — Update customer
@@ -19,7 +21,12 @@ Dedicated agent for Shopify e-commerce operations with isolated MCP access
 - Product
 - **get-products** — Search products
 - **get-product** — Get product by ID
-- **create-product** — Create new product
+- **export-product-catalogue** — Stream every Shopify product page to an atomic local JSON artifact and return completeness metadata
+- **create-product** — Create a product and set its required default-variant price
+- Shopify Inventory
+- **get-inventory-items** — Read inventory-item IDs and tracked/item metadata for up to 100 variants of one Shopify product; inspect `metadata.completeness` and treat a 100-row result as incomplete
+- **get-inventory-levels** — Read Shopify quantities and location IDs at up to 50 locations for one inventory item; inspect `metadata.completeness` and treat a 50-row result as incomplete
+- **inventory-set-quantities** — Preview or set absolute Shopify `available` or `on_hand` quantities using idempotency and compare-and-set; mutation requires the approved preview token and global `--confirm`
 
 ## Prerequisites
 
@@ -33,11 +40,11 @@ Dedicated agent for Shopify e-commerce operations with isolated MCP access
 git clone https://github.com/bigl34/claude-code-plugin-shopify.git
 cd claude-code-plugin-shopify
 cp config.template.json config.json  # fill in your credentials
-cd scripts && npm install
+npm --prefix scripts install
 ```
 
 ```bash
-node scripts/dist/cli.js get-orders
+npm --prefix scripts run cli -- get-orders
 ```
 
 ## Installation
@@ -54,12 +61,14 @@ node scripts/dist/cli.js get-orders
 
 ### Order Commands
 
-| Command                       | Description                 | Options                                                                                         |
-| ----------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------- |
-| `get-orders`                  | List recent orders          | `--status`, `--limit`                                                                           |
-| `get-order`                   | Get order by ID             | `--id` (required)                                                                               |
-| `update-order`                | Update order details        | `--id`, `--tags`, `--email`, `--note`                                                           |
-| `update-fulfillment-tracking` | Update fulfillment tracking | `--fulfillmentId`, `--trackingNumber`, `--trackingCompany`, `--trackingUrl`, `--notifyCustomer` |
+| Command                       | Description                                          | Options                                                                                                     |
+| ----------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `get-orders`                  | List/search orders (single page)                     | `--status`, `--limit`, `--query`, `--sort-key`, `--reverse`, `--after`                                      |
+| `get-all-orders`              | List/search orders across all pages (auto-paginated) | `--status`, `--query`, `--sort-key`, `--reverse`, `--max-pages`                                             |
+| `get-order`                   | Get order by ID                                      | `--id` (required)                                                                                           |
+| `update-order`                | Update order details                                 | `--id`, `--tags`, `--email`, `--note`                                                                       |
+| `create-fulfillment`          | Fulfill an order with optional tracking              | `--order-number` (required), `--tracking-number`, `--tracking-company`, `--notify-customer`, `--line-items` |
+| `update-fulfillment-tracking` | Update or clear fulfillment tracking                 | `--fulfillmentId`, `--trackingNumber`, `--trackingCompany`, `--trackingUrl`, `--notifyCustomer`, `--clear`  |
 
 ### Customer Commands
 
@@ -71,45 +80,106 @@ node scripts/dist/cli.js get-orders
 
 ### Product Commands
 
-| Command          | Description        | Options                                                    |
-| ---------------- | ------------------ | ---------------------------------------------------------- |
-| `get-products`   | Search products    | `--search`, `--limit`                                      |
-| `get-product`    | Get product by ID  | `--id` (required)                                          |
-| `create-product` | Create new product | `--title`, `--description`, `--vendor`, `--type`, `--tags` |
+| Command                    | Description                                                                                         | Options                                                                                        |
+| -------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `get-products`             | Search products                                                                                     | `--search`, `--limit`                                                                          |
+| `get-product`              | Get product by ID                                                                                   | `--id` (required)                                                                              |
+| `export-product-catalogue` | Stream every Shopify product page to an atomic local JSON artifact and return completeness metadata | `--output-file` (required), `--page-size`, `--max-pages`, `--max-page-attempts`, `--overwrite` |
+| `create-product`           | Create a product and set its required default-variant price                                         | `--title`, `--price` (required), `--description`, `--vendor`, `--type`, `--tags`, `--status`   |
+
+### Shopify Inventory Commands
+
+| Command                    | Description                                                                                                                                                                    | Options                                                                                                                                                                 |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get-inventory-items`      | Read inventory-item IDs and tracked/item metadata for up to 100 variants of one Shopify product; inspect `metadata.completeness` and treat a 100-row result as incomplete      | `--product-id` (required; numeric or GID)                                                                                                                               |
+| `get-inventory-levels`     | Read Shopify quantities and location IDs at up to 50 locations for one inventory item; inspect `metadata.completeness` and treat a 50-row result as incomplete                 | `--inventory-item-id` (required; numeric or GID)                                                                                                                        |
+| `inventory-set-quantities` | Preview or set absolute Shopify `available` or `on_hand` quantities using idempotency and compare-and-set; mutation requires the approved preview token and global `--confirm` | `--idempotency-key`, `--reason`, `--name`, `--quantities` (required), `--reference-document-uri`, `--dry-run` (preview only), `--preview-token` (required for mutation) |
 
 ### Common Options
 
-| Option              | Description                                            |
-| ------------------- | ------------------------------------------------------ |
-| `--id <id>`         | Shopify GraphQL ID (e.g., "gid://shopify/Order/12345") |
-| `--search <query>`  | Search term                                            |
-| `--status <status>` | Order status filter                                    |
-| `--limit <number>`  | Maximum records to return                              |
-| `--tags <tags>`     | Comma-separated tags                                   |
+| Option                 | Description                                                                                                           |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `--id <id>`            | Shopify GraphQL ID (e.g., "gid://shopify/Order/12345")                                                                |
+| `--search <query>`     | Search term                                                                                                           |
+| `--status <status>`    | Order status filter                                                                                                   |
+| `--limit <number>`     | Maximum records to return (get-orders, single page)                                                                   |
+| `--query <filter>`     | Shopify search-syntax filter (e.g., `name:YOUR_ORDER_NUMBER`, `created_at:>2025-06-01`)                               |
+| `--sort-key <key>`     | Sort key (e.g., `CREATED_AT`)                                                                                         |
+| `--reverse`            | Reverse the sort order                                                                                                |
+| `--after <cursor>`     | Pagination cursor from a previous page (get-orders)                                                                   |
+| `--max-pages <n>`      | Max pages to fetch (get-all-orders, default 10)                                                                       |
+| `--output-file <path>` | Catalogue export destination; a new target needs no confirmation, but overwrite requires `--overwrite true --confirm` |
+| `--tags <tags>`        | Comma-separated tags                                                                                                  |
 
 ## Usage Examples
 
 ```bash
 # List recent orders
-node $HOME/node scripts/dist/cli.js get-orders --limit 10
+npm --prefix "scripts" run cli -- get-orders --limit 10
+
+# Find an order by its order number (e.g. #YOUR_ORDER_NUMBER)
+npm --prefix "scripts" run cli -- get-orders --query "name:YOUR_ORDER_NUMBER"
 
 # Get a specific order by ID
-node $HOME/node scripts/dist/cli.js get-order --id "gid://shopify/Order/12345"
+npm --prefix "scripts" run cli -- get-order --id "gid://shopify/Order/12345"
 
 # Search for customers
-node $HOME/node scripts/dist/cli.js get-customers --search "john@example.com"
+npm --prefix "scripts" run cli -- get-customers --search "john@example.com"
 
 # Get customer's order history
-node $HOME/node scripts/dist/cli.js get-customer-orders --id "gid://shopify/Customer/12345"
+npm --prefix "scripts" run cli -- get-customer-orders --id "gid://shopify/Customer/12345"
 
 # Search products
-node $HOME/node scripts/dist/cli.js get-products --search "ProductName Product"
+npm --prefix "scripts" run cli -- get-products --search "ProductName Product"
+
+# Inspect the Shopify-side inventory item IDs for one product
+npm --prefix "scripts" run cli -- get-inventory-items \
+  --product-id "gid://shopify/Product/12345"
+
+# Read Shopify-side quantities at up to 50 locations for one inventory item;
+# a 50-row response is explicitly incomplete because the fork has no pageInfo
+npm --prefix "scripts" run cli -- get-inventory-levels \
+  --inventory-item-id "gid://shopify/InventoryItem/23456"
+
+# Export the complete Shopify product-list catalogue to a new restricted file
+npm --prefix "scripts" run cli -- export-product-catalogue \
+  --output-file "$HOME/biz/var/shopify-product-catalogue.json"
+
+# Create a draft product with the Hide tag and verify its GBP 25.00 default-variant price
+# (run after ordinary approval or canonical /create-product workflow authorization)
+npm --prefix "scripts" run cli -- create-product \
+  --title "Brake Lever" --price "25.00" --tags "Hide" --confirm
 
 # Update order tags
-node $HOME/node scripts/dist/cli.js update-order --id "gid://shopify/Order/12345" --tags "urgent,priority"
+npm --prefix "scripts" run cli -- update-order --id "gid://shopify/Order/12345" --tags "urgent,priority"
+
+# Partially fulfill selected lines by stable Shopify line item ID
+npm --prefix "scripts" run cli -- create-fulfillment \
+  --order-number "YOUR_ORDER_NUMBER" --tracking-number "1Z999AA10123456784" \
+  --tracking-company "UPS" --notify-customer false \
+  --line-items '[{"lineItemId":"gid://shopify/LineItem/12345","quantity":1}]'
 
 # Update fulfillment tracking number
-node $HOME/node scripts/dist/cli.js update-fulfillment-tracking --fulfillmentId "gid://shopify/Fulfillment/12345" --trackingNumber "1Z999AA10123456784" --trackingCompany "UPS"
+npm --prefix "scripts" run cli -- update-fulfillment-tracking --fulfillmentId "gid://shopify/Fulfillment/12345" --trackingNumber "1Z999AA10123456784" --trackingCompany "UPS"
+
+# Clear fulfillment tracking without notifying the customer
+npm --prefix "scripts" run cli -- update-fulfillment-tracking --fulfillmentId "gid://shopify/Fulfillment/12345" --clear --notifyCustomer false
+
+# Preview Shopify's coupled available/on_hand effects without mutation
+npm --prefix "scripts" run cli -- inventory-set-quantities \
+  --idempotency-key "cycle-count-2026-09-04-item-23456-location-34567" \
+  --reason "cycle_count_available" --name "available" \
+  --quantities '[{"inventoryItemId":"gid://shopify/InventoryItem/23456","locationId":"gid://shopify/Location/34567","quantity":7,"changeFromQuantity":6}]' \
+  --dry-run
+
+# Apply exactly that preview only after approval; reuse its idempotency key and
+# pass metadata.previewToken from the dry-run response
+npm --prefix "scripts" run cli -- inventory-set-quantities \
+  --idempotency-key "cycle-count-2026-09-04-item-23456-location-34567" \
+  --reason "cycle_count_available" --name "available" \
+  --quantities '[{"inventoryItemId":"gid://shopify/InventoryItem/23456","locationId":"gid://shopify/Location/34567","quantity":7,"changeFromQuantity":6}]' \
+  --preview-token "sha256:<preview-token-from-dry-run>" \
+  --confirm
 ```
 
 ## How It Works
@@ -125,17 +195,6 @@ This plugin wraps an MCP (Model Context Protocol) server, providing a CLI interf
 | MCP connection timeout | Ensure the MCP server binary is installed and accessible |
 | Rate limiting | The CLI handles retries automatically; wait and retry if persistent |
 | Unexpected JSON output | Check API credentials haven't expired |
-
-## Known Limitations
-
-**Order Number Search**: The `get-orders` command does not support filtering by order number (e.g., "#ORD1234"). The MCP server only supports `--status` and `--limit` filters.
-
-**Workaround**: To find a specific order by number:
-1. Use `get-orders` to list recent orders
-2. Scan the results for the order number you need
-3. Use `get-order --id <graphql-id>` to get full details
-
-Alternatively, search for the customer first (`get-customers --search "email@example.com"`) then get their order history (`get-customer-orders --id <customer-id>`).
 
 ## Contributing
 

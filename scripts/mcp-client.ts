@@ -1,35 +1,346 @@
-/**
- * Shopify MCP Client
- *
- * Wrapper client for Shopify GraphQL Admin API via MCP server.
- * Handles orders, customers, and products.
- * Configuration from config.json with store domain and API credentials.
- */
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
-import { dirname, join } from "path";
+import { createHash } from "node:crypto";
+import { isAbsolute } from "node:path";
+import { loadServiceConfig, resolveShopifyAdminCredentials, z } from "@local/cli-utils";
 import { PluginCache, TTL, createCacheKey } from "@local/plugin-cache";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const MCPConfigSchema = z.object({
+  mcpServer: z.object({
+    command: z.string().min(1),
+    args: z.array(z.string()),
+    env: z.record(z.string(), z.string()).optional(),
+  }),
+  storeDomain: z.string().min(1),
+});
 
-interface MCPConfig {
-  mcpServer: {
-    command: string;
-    args: string[];
-    env?: Record<string, string>;
+type MCPConfig = z.infer<typeof MCPConfigSchema>;
+
+export type UpdateProductInput = {
+  id: string;
+  title?: string;
+  descriptionHtml?: string;
+  handle?: string;
+  vendor?: string;
+  productType?: string;
+  tags?: string[];
+  status?: "ACTIVE" | "DRAFT" | "ARCHIVED";
+  seo?: {
+    title?: string;
+    description?: string;
   };
-  storeDomain: string;
+  metafields?: Array<{
+    id?: string;
+    namespace?: string;
+    key?: string;
+    value: string;
+    type?: string;
+  }>;
+  collectionsToJoin?: string[];
+  collectionsToLeave?: string[];
+  redirectNewHandle?: boolean;
+};
+
+export type ReverseFulfillmentDispositionInput = {
+  reverseFulfillmentOrderLineItemId: string;
+  quantity: number;
+  dispositionType: "MISSING" | "NOT_RESTOCKED" | "PROCESSING_REQUIRED" | "RESTOCKED";
+  locationId?: string;
+};
+
+export type ShopifyFileUploadInput = {
+  filePath: string;
+  filename?: string;
+  mimeType: string;
+  contentType: "IMAGE" | "FILE" | "VIDEO" | "MODEL_3D";
+  alt?: string;
+  duplicateResolutionMode?: "APPEND_UUID" | "RAISE_ERROR" | "REPLACE";
+  dryRun?: boolean;
+  confirmation?: "UPLOAD_FILE_TO_SHOPIFY";
+};
+
+export type InventoryQuantitySetInput = {
+  idempotencyKey: string;
+  reason: string;
+  name: "available" | "on_hand";
+  referenceDocumentUri?: string;
+  quantities: Array<{
+    inventoryItemId: string;
+    locationId: string;
+    quantity: number;
+    changeFromQuantity: number;
+  }>;
+};
+
+export const INVENTORY_ITEMS_FORK_LIMIT = 100;
+export const INVENTORY_LEVELS_FORK_LIMIT = 50;
+
+export type InventoryQuantityEffect = {
+  name: "available" | "on_hand";
+  before: number;
+  after: number;
+  delta: number;
+};
+
+export type InventoryQuantityPreviewLine = {
+  inventoryItemId: string;
+  locationId: string;
+  observedAt?: unknown;
+  requestedName: "available" | "on_hand";
+  changeFromQuantity: number;
+  targetQuantity: number;
+  effects: {
+    available: InventoryQuantityEffect;
+    on_hand: InventoryQuantityEffect;
+  };
+};
+
+export type InventoryAdjustmentChange = {
+  name?: unknown;
+  delta?: unknown;
+  quantityAfterChange?: unknown;
+  item?: {
+    id?: unknown;
+    sku?: unknown;
+  } | null;
+  location?: {
+    id?: unknown;
+    name?: unknown;
+  } | null;
+};
+
+export type InventoryAdjustmentGroup = {
+  createdAt?: unknown;
+  reason?: unknown;
+  referenceDocumentUri?: unknown;
+  changes?: InventoryAdjustmentChange[];
+};
+
+export type InventoryQuantitySetResult = {
+  dryRun: boolean;
+  idempotencyKey: string;
+  previewToken: string;
+  preview: {
+    quantities: InventoryQuantityPreviewLine[];
+  };
+  adjustmentGroup?: InventoryAdjustmentGroup;
+  verification?: {
+    verified: true;
+    quantities: InventoryQuantityPreviewLine[];
+  };
+};
+
+export type ProductSortKey =
+  | "CREATED_AT"
+  | "ID"
+  | "INVENTORY_TOTAL"
+  | "PRODUCT_TYPE"
+  | "PUBLISHED_AT"
+  | "RELEVANCE"
+  | "TITLE"
+  | "UPDATED_AT"
+  | "VENDOR";
+
+export interface ShopifyToolResult {
+  id?: unknown;
+  status?: unknown;
+  handle?: unknown;
+  product?: ShopifyToolResult;
+  shop?: ShopifyToolResult;
+  events?: unknown[];
+  pageInfo?: unknown;
+  productTitle?: unknown;
+  files?: unknown[];
+  dryRun?: boolean;
+  createdFiles?: Array<{ id?: unknown }>;
+  scopeHandles?: unknown[];
+  appInstallation?: unknown;
+  webPixel?: {
+    id?: unknown;
+    settings?: unknown;
+  };
+  themes?: unknown[];
 }
 
-// Initialize cache with namespace
-const cache = new PluginCache({
-  namespace: "shopify-order-manager",
-  defaultTTL: TTL.FIVE_MINUTES,
-});
+export interface ShopifyInventoryItem {
+  id?: string | null;
+  sku?: string | null;
+  tracked?: boolean | null;
+  requiresShipping?: boolean | null;
+  unitCost?: {
+    amount?: string | null;
+    currencyCode?: string | null;
+  } | null;
+  countryCodeOfOrigin?: string | null;
+  provinceCodeOfOrigin?: string | null;
+  harmonizedSystemCode?: string | null;
+  measurement?: {
+    weight?: {
+      unit?: string | null;
+      value?: number | null;
+    } | null;
+  } | null;
+  locationsCount?: { count?: number | null } | null;
+}
+
+export interface ShopifyProductInventoryVariant {
+  variantId?: string | null;
+  variantTitle?: string | null;
+  variantSku?: string | null;
+  inventoryItem?: ShopifyInventoryItem | null;
+}
+
+export interface ShopifyInventoryItemsResult {
+  productId?: string | null;
+  productTitle?: string | null;
+  variantsCount?: number | null;
+  variants?: ShopifyProductInventoryVariant[];
+}
+
+export interface ShopifyInventoryQuantity {
+  name?: string | null;
+  quantity?: number | null;
+}
+
+export interface ShopifyInventoryLevel {
+  id?: string | null;
+  location?: {
+    id?: string | null;
+    name?: string | null;
+    isActive?: boolean | null;
+  } | null;
+  quantities?: ShopifyInventoryQuantity[];
+  updatedAt?: string | null;
+}
+
+export interface ShopifyInventoryLevelsResult {
+  inventoryItemId?: string | null;
+  sku?: string | null;
+  tracked?: boolean | null;
+  levelsCount?: number | null;
+  levels?: ShopifyInventoryLevel[];
+}
+
+export interface MinimalMcpClient {
+  callTool(params: { name: string; arguments: Record<string, unknown> }): Promise<{
+    content: unknown;
+    isError?: boolean;
+  }>;
+  listTools(): Promise<{ tools: unknown[] }>;
+  close(): Promise<void>;
+}
+
+let productionCache: PluginCache | null = null;
+
+function getProductionCache(): PluginCache {
+  productionCache ??= new PluginCache({
+    namespace: "shopify-order-manager",
+    defaultTTL: TTL.FIVE_MINUTES,
+  });
+  return productionCache;
+}
+
+export type RestFetch = (
+  input: string,
+  init?: { method?: string; headers?: Record<string, string>; body?: string }
+) => Promise<{
+  ok: boolean;
+  status: number;
+  statusText: string;
+  headers: { get(name: string): string | null };
+  text(): Promise<string>;
+  json(): Promise<unknown>;
+}>;
+
+export function resolveShopifyMcpCommand(
+  configuredCommand: string,
+  managedOverride = process.env.SHOPIFY_MCP_COMMAND,
+): string {
+  const override = managedOverride?.trim();
+  if (!override) return configuredCommand;
+  if (!isAbsolute(override)) {
+    throw new Error("SHOPIFY_MCP_COMMAND must be an absolute reviewed runtime path");
+  }
+  return override;
+}
+
+function normalizeProviderPrice(value: unknown): string | null {
+  if (typeof value !== "string" || !/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(value)) {
+    return null;
+  }
+  const [whole, fraction = ""] = value.split(".");
+  return `${whole}.${fraction.padEnd(2, "0")}`;
+}
+
+function shopifyResourceIdsEqual(left: unknown, right: unknown): boolean {
+  if (typeof left !== "string" || typeof right !== "string") return false;
+  if (left === right) return true;
+  const leftTail = left.split("/").pop();
+  const rightTail = right.split("/").pop();
+  return Boolean(leftTail && rightTail && leftTail === rightTail);
+}
+
+function inventoryQuantityValue(
+  quantities: ShopifyInventoryQuantity[],
+  name: "available" | "on_hand",
+  inventoryItemId: string,
+  locationId: string,
+): number {
+  const row = quantities.find((quantity) => quantity?.name === name);
+  if (!row || typeof row.quantity !== "number" || !Number.isInteger(row.quantity)) {
+    throw new Error(
+      `Inventory read did not return an integer ${name} quantity for ${inventoryItemId} at ${locationId}`
+    );
+  }
+  return row.quantity;
+}
+
+function inventoryVerificationError(
+  expected: InventoryQuantityPreviewLine,
+  detail: string,
+): Error {
+  return new Error(
+    `post-write verification failed for ${expected.inventoryItemId} ` +
+    `at ${expected.locationId}: ${detail}`
+  );
+}
+
+function inventoryOutcomeUncertainError(idempotencyKey: string, error: unknown): Error {
+  const detail = error instanceof Error ? error.message : String(error);
+  return new Error(
+    `Shopify inventory mutation outcome is uncertain after dispatch: ${detail}. ` +
+    `Reconcile fresh available and on_hand values before deciding what to do. ` +
+    `If the requested target is already present, treat the original write as possibly landed and do not send another mutation. ` +
+    `If the original changeFromQuantity state is still present and you retry the same logical write, reuse idempotency key ${idempotencyKey}; never create a new key for that retry.`
+  );
+}
+
+function inventoryPreviewToken(
+  input: InventoryQuantitySetInput,
+  preview: InventoryQuantityPreviewLine[],
+): string {
+  const approvedState = {
+    version: 1,
+    idempotencyKey: input.idempotencyKey,
+    reason: input.reason,
+    name: input.name,
+    referenceDocumentUri: input.referenceDocumentUri ?? null,
+    quantities: preview.map((line) => ({
+      inventoryItemId: line.inventoryItemId,
+      locationId: line.locationId,
+      observedAt: line.observedAt ?? null,
+      requestedName: line.requestedName,
+      changeFromQuantity: line.changeFromQuantity,
+      targetQuantity: line.targetQuantity,
+      effects: {
+        available: line.effects.available,
+        on_hand: line.effects.on_hand,
+      },
+    })),
+  };
+  return `sha256:${createHash("sha256").update(JSON.stringify(approvedState)).digest("hex")}`;
+}
 
 export class ShopifyMCPClient {
   private client: Client | null = null;
@@ -37,23 +348,46 @@ export class ShopifyMCPClient {
   private config: MCPConfig;
   private connected: boolean = false;
   private cacheDisabled: boolean = false;
+  private injectedClient: MinimalMcpClient | null;
+  private injectedRestFetch: RestFetch | null;
+  private readonly cache: PluginCache;
 
-  constructor() {
-    // When compiled, __dirname is dist/, so look in parent for config.json
-    const configPath = join(__dirname, "..", "config.json");
-    this.config = JSON.parse(readFileSync(configPath, "utf-8"));
+  constructor(opts?: {
+    client?: MinimalMcpClient;
+    config?: MCPConfig;
+    restFetch?: RestFetch;
+    cacheDir?: string;
+  }) {
+    this.injectedClient = opts?.client ?? null;
+    this.injectedRestFetch = opts?.restFetch ?? null;
+    this.cache = opts?.cacheDir
+      ? new PluginCache({
+          namespace: "shopify-order-manager",
+          defaultTTL: TTL.FIVE_MINUTES,
+          cacheDir: opts.cacheDir,
+        })
+      : getProductionCache();
+
+    if (opts?.config) {
+      this.config = opts.config;
+    } else if (opts?.client) {
+      this.config = { mcpServer: { command: "", args: [] }, storeDomain: "" } as MCPConfig;
+    } else {
+      this.config = loadServiceConfig("shopify-order-manager", {
+        schema: MCPConfigSchema,
+      });
+    }
   }
 
-  // ============================================
-  // CONNECTION MANAGEMENT
-  // ============================================
 
-  /**
-   * Establishes connection to the MCP server.
-   * Called automatically by other methods when needed.
-   */
   async connect(): Promise<void> {
     if (this.connected) return;
+
+    if (this.injectedClient) {
+      this.client = this.injectedClient as unknown as Client;
+      this.connected = true;
+      return;
+    }
 
     const env = {
       ...process.env,
@@ -61,7 +395,7 @@ export class ShopifyMCPClient {
     };
 
     this.transport = new StdioClientTransport({
-      command: this.config.mcpServer.command,
+      command: resolveShopifyMcpCommand(this.config.mcpServer.command),
       args: this.config.mcpServer.args,
       env: env as Record<string, string>,
     });
@@ -75,9 +409,6 @@ export class ShopifyMCPClient {
     this.connected = true;
   }
 
-  /**
-   * Disconnects from the MCP server.
-   */
   async disconnect(): Promise<void> {
     if (this.client && this.connected) {
       await this.client.close();
@@ -85,70 +416,41 @@ export class ShopifyMCPClient {
     }
   }
 
-  // ============================================
-  // CACHE CONTROL
-  // ============================================
 
-  /**
-   * Disables caching for all subsequent requests.
-   */
   disableCache(): void {
     this.cacheDisabled = true;
-    cache.disable();
+    this.cache.disable();
   }
 
-  /**
-   * Re-enables caching after it was disabled.
-   */
   enableCache(): void {
     this.cacheDisabled = false;
-    cache.enable();
+    this.cache.enable();
   }
 
-  /**
-   * Returns cache statistics including hit/miss counts.
-   */
   getCacheStats() {
-    return cache.getStats();
+    return this.cache.getStats();
   }
 
-  /**
-   * Clears all cached data.
-   * @returns Number of cache entries cleared
-   */
   clearCache(): number {
-    return cache.clear();
+    return this.cache.clear();
   }
 
-  /**
-   * Invalidates a specific cache entry by key.
-   * @param key - The cache key to invalidate
-   */
   invalidateCacheKey(key: string): boolean {
-    return cache.invalidate(key);
+    return this.cache.invalidate(key);
   }
 
-  // ============================================
-  // MCP TOOLS
-  // ============================================
+  private invalidateOrderLifecycleCaches(): void {
+    this.cache.invalidatePattern(/^order/);
+    this.cache.invalidatePattern(/^fulfillment-orders/);
+  }
 
-  /**
-   * Lists available MCP tools.
-   * @returns Array of tool definitions
-   */
+
   async listTools(): Promise<any[]> {
     await this.connect();
     const result = await this.client!.listTools();
     return result.tools;
   }
 
-  /**
-   * Calls an MCP tool with arguments.
-   * @param name - Tool name
-   * @param args - Tool arguments
-   * @returns Parsed tool response
-   * @throws {Error} If tool call fails
-   */
   async callTool(name: string, args: Record<string, any>): Promise<any> {
     await this.connect();
 
@@ -172,131 +474,476 @@ export class ShopifyMCPClient {
     return content;
   }
 
-  // ============================================
-  // PRODUCT OPERATIONS
-  // ============================================
 
-  /**
-   * Lists products with optional search and pagination.
-   *
-   * @param options - Filter options
-   * @param options.searchTitle - Search by title
-   * @param options.limit - Maximum products to return
-   * @returns Array of product objects
-   *
-   * @cached TTL: 1 hour
-   *
-   * @example
-   * const products = await client.getProducts({ searchTitle: "Product A" });
-   */
-  async getProducts(options?: { searchTitle?: string; limit?: number }): Promise<any> {
+  async getProducts(options?: {
+    searchTitle?: string;
+    limit?: number;
+    since?: string;
+    after?: string;
+    status?: "active" | "draft" | "archived";
+    sortKey?: ProductSortKey;
+    reverse?: boolean;
+    bypassCache?: boolean;
+  }): Promise<any> {
     const cacheKey = createCacheKey("products", {
       search: options?.searchTitle,
       limit: options?.limit,
+      since: options?.since,
+      after: options?.after,
+      status: options?.status,
+      sortKey: options?.sortKey,
+      reverse: options?.reverse,
     });
 
-    return cache.getOrFetch(
+    return this.cache.getOrFetch(
       cacheKey,
       async () => {
+        const sinceClause = options?.since ? `updated_at:>=${options.since}` : undefined;
+        const statusClause = options?.status ? `status:${options.status}` : undefined;
+        const mergedQuery = [sinceClause, statusClause].filter(Boolean).join(" ") || undefined;
+
         const args: Record<string, any> = {};
         if (options?.searchTitle) args.searchTitle = options.searchTitle;
         if (options?.limit) args.limit = options.limit;
+        if (mergedQuery) args.query = mergedQuery;
+        if (options?.after) args.after = options.after;
+        if (options?.sortKey) args.sortKey = options.sortKey;
+        if (options?.reverse !== undefined) args.reverse = options.reverse;
         return this.callTool("get-products", args);
       },
-      { ttl: TTL.HOUR, bypassCache: this.cacheDisabled }
+      { ttl: TTL.HOUR, bypassCache: this.cacheDisabled || options?.bypassCache === true }
     );
   }
 
-  /**
-   * Retrieves a single product by ID.
-   *
-   * @param productId - Shopify product ID (numeric or GID)
-   * @returns Product object
-   *
-   * @cached TTL: 1 hour
-   */
+  async getInventoryItems(productId: string): Promise<ShopifyInventoryItemsResult> {
+    const cacheKey = createCacheKey("inventory-items", { productId });
+    return this.cache.getOrFetch(
+      cacheKey,
+      () => this.callTool("get-inventory-items", { productId }),
+      { ttl: TTL.FIVE_MINUTES, bypassCache: this.cacheDisabled }
+    );
+  }
+
+  async getInventoryLevels(
+    inventoryItemId: string,
+    options?: { bypassCache?: boolean },
+  ): Promise<ShopifyInventoryLevelsResult> {
+    const cacheKey = createCacheKey("inventory-levels", { inventoryItemId });
+    return this.cache.getOrFetch(
+      cacheKey,
+      () => this.callTool("get-inventory-levels", { inventoryItemId }),
+      { ttl: TTL.FIVE_MINUTES, bypassCache: this.cacheDisabled || options?.bypassCache === true }
+    );
+  }
+
+  private invalidateInventoryCaches(): void {
+    this.cache.invalidatePattern(/^inventory-/);
+    this.cache.invalidatePattern(/^products/);
+    this.cache.invalidatePattern(/^product/);
+  }
+
+  private async readInventoryLevelsFresh(
+    inventoryItemIds: string[],
+  ): Promise<Map<string, ShopifyInventoryLevelsResult>> {
+    const results = new Map<string, ShopifyInventoryLevelsResult>();
+    for (const inventoryItemId of [...new Set(inventoryItemIds)]) {
+      results.set(
+        inventoryItemId,
+        await this.getInventoryLevels(inventoryItemId, { bypassCache: true }),
+      );
+    }
+    return results;
+  }
+
+  private inventoryPreview(
+    input: InventoryQuantitySetInput,
+    levelsByInventoryItem: Map<string, ShopifyInventoryLevelsResult>,
+  ): InventoryQuantityPreviewLine[] {
+    return input.quantities.map((requested) => {
+      const result = levelsByInventoryItem.get(requested.inventoryItemId);
+      const levels = Array.isArray(result?.levels) ? result.levels : [];
+      const level = levels.find((candidate) =>
+        shopifyResourceIdsEqual(candidate?.location?.id, requested.locationId));
+      if (!level) {
+        const capWarning = levels.length >= INVENTORY_LEVELS_FORK_LIMIT
+          ? ` The fork returned its ${INVENTORY_LEVELS_FORK_LIMIT}-location cap without pageInfo, so the target may be on an unavailable later page.`
+          : "";
+        throw new Error(
+          `Inventory preflight could not find location ${requested.locationId} for item ${requested.inventoryItemId}.${capWarning}`
+        );
+      }
+
+      const quantities = Array.isArray(level.quantities) ? level.quantities : [];
+      const currentAvailable = inventoryQuantityValue(
+        quantities,
+        "available",
+        requested.inventoryItemId,
+        requested.locationId,
+      );
+      const currentOnHand = inventoryQuantityValue(
+        quantities,
+        "on_hand",
+        requested.inventoryItemId,
+        requested.locationId,
+      );
+      const currentRequested = input.name === "available" ? currentAvailable : currentOnHand;
+      if (currentRequested !== requested.changeFromQuantity) {
+        if (currentRequested === requested.quantity) {
+          throw new Error(
+            `Inventory preflight found ${requested.inventoryItemId} at ${requested.locationId} already at the requested ` +
+            `${input.name} target ${requested.quantity}. A previous ambiguous attempt may have landed. No mutation was ` +
+            `dispatched; reconcile both available and on_hand and do not issue another write or a new idempotency key from this stale approval.`
+          );
+        }
+        throw new Error(
+          `Inventory preflight compare-and-set mismatch for ${requested.inventoryItemId} at ${requested.locationId}: ` +
+          `${input.name} is ${currentRequested}, not changeFromQuantity ${requested.changeFromQuantity}`
+        );
+      }
+
+      const delta = requested.quantity - currentRequested;
+      const availableAfter = input.name === "available"
+        ? requested.quantity
+        : currentAvailable + delta;
+      const onHandAfter = input.name === "on_hand"
+        ? requested.quantity
+        : currentOnHand + delta;
+
+      return {
+        inventoryItemId: result?.inventoryItemId ?? requested.inventoryItemId,
+        locationId: level?.location?.id ?? requested.locationId,
+        observedAt: level?.updatedAt,
+        requestedName: input.name,
+        changeFromQuantity: requested.changeFromQuantity,
+        targetQuantity: requested.quantity,
+        effects: {
+          available: {
+            name: "available",
+            before: currentAvailable,
+            after: availableAfter,
+            delta,
+          },
+          on_hand: {
+            name: "on_hand",
+            before: currentOnHand,
+            after: onHandAfter,
+            delta,
+          },
+        },
+      };
+    });
+  }
+
+  private verifyInventoryMutation(
+    preview: InventoryQuantityPreviewLine[],
+    adjustmentGroup: InventoryAdjustmentGroup | undefined,
+    levelsByInventoryItem: Map<string, ShopifyInventoryLevelsResult>,
+  ): InventoryQuantityPreviewLine[] {
+    const changes = Array.isArray(adjustmentGroup?.changes) ? adjustmentGroup.changes : [];
+    for (const expected of preview) {
+      const result = levelsByInventoryItem.get(
+        [...levelsByInventoryItem.keys()].find((key) =>
+          shopifyResourceIdsEqual(key, expected.inventoryItemId)) ?? expected.inventoryItemId
+      );
+      const levels = Array.isArray(result?.levels) ? result.levels : [];
+      const level = levels.find((candidate) =>
+        shopifyResourceIdsEqual(candidate?.location?.id, expected.locationId));
+      if (!level) {
+        throw inventoryVerificationError(expected, "fresh readback omitted the target location");
+      }
+      const quantities = Array.isArray(level.quantities) ? level.quantities : [];
+
+      for (const name of ["available", "on_hand"] as const) {
+        const effect = expected.effects[name];
+        const readback = inventoryQuantityValue(
+          quantities,
+          name,
+          expected.inventoryItemId,
+          expected.locationId,
+        );
+        if (readback !== effect.after) {
+          throw inventoryVerificationError(
+            expected,
+            `${name} read back as ${readback}, expected ${effect.after}`,
+          );
+        }
+
+        if (effect.delta !== 0) {
+          const reported = changes.find((change) =>
+            change?.name === name &&
+            shopifyResourceIdsEqual(change?.item?.id, expected.inventoryItemId) &&
+            shopifyResourceIdsEqual(change?.location?.id, expected.locationId));
+          if (
+            !reported ||
+            reported.delta !== effect.delta ||
+            (
+              reported.quantityAfterChange != null &&
+              reported.quantityAfterChange !== effect.after
+            )
+          ) {
+            throw inventoryVerificationError(
+              expected,
+              `adjustment response did not prove the coupled ${name} delta ${effect.delta}`,
+            );
+          }
+        }
+      }
+    }
+    return preview.map((line) => ({
+      ...line,
+      effects: {
+        available: { ...line.effects.available },
+        on_hand: { ...line.effects.on_hand },
+      },
+    }));
+  }
+
+  async setInventoryQuantities(
+    input: InventoryQuantitySetInput,
+    options?: { dryRun?: boolean; previewToken?: string },
+  ): Promise<InventoryQuantitySetResult> {
+    this.invalidateInventoryCaches();
+    const before = await this.readInventoryLevelsFresh(
+      input.quantities.map((quantity) => quantity.inventoryItemId),
+    );
+    const preview = this.inventoryPreview(input, before);
+    const freshPreviewToken = inventoryPreviewToken(input, preview);
+    if (options?.dryRun === true) {
+      return {
+        dryRun: true,
+        idempotencyKey: input.idempotencyKey,
+        previewToken: freshPreviewToken,
+        preview: { quantities: preview },
+      };
+    }
+    if (!options?.previewToken) {
+      throw new Error(
+        "Inventory mutation requires the --preview-token returned by a fresh --dry-run; no mutation was dispatched"
+      );
+    }
+    if (options.previewToken !== freshPreviewToken) {
+      throw new Error(
+        "Inventory confirmation preview token no longer matches the fresh coupled quantity state; no mutation was dispatched. " +
+        "Run --dry-run again and obtain approval for the new available/on_hand preview."
+      );
+    }
+
+    try {
+      const result = await this.callTool("inventory-set-quantities", input);
+      this.invalidateInventoryCaches();
+      const after = await this.readInventoryLevelsFresh(
+        input.quantities.map((quantity) => quantity.inventoryItemId),
+      );
+      const verified = this.verifyInventoryMutation(
+        preview,
+        result?.adjustmentGroup,
+        after,
+      );
+      return {
+        dryRun: false,
+        idempotencyKey: result?.idempotencyKey ?? input.idempotencyKey,
+        previewToken: freshPreviewToken,
+        preview: { quantities: preview },
+        adjustmentGroup: result?.adjustmentGroup,
+        verification: { verified: true, quantities: verified },
+      };
+    } catch (error) {
+      throw inventoryOutcomeUncertainError(input.idempotencyKey, error);
+    } finally {
+      this.invalidateInventoryCaches();
+    }
+  }
+
   async getProductById(productId: string): Promise<any> {
     const cacheKey = createCacheKey("product", { id: productId });
 
-    return cache.getOrFetch(
+    return this.cache.getOrFetch(
       cacheKey,
       () => this.callTool("get-product-by-id", { productId }),
       { ttl: TTL.HOUR, bypassCache: this.cacheDisabled }
     );
   }
 
-  /**
-   * Creates a new product.
-   *
-   * @param product - Product data
-   * @param product.title - Product title (required)
-   * @param product.descriptionHtml - HTML description
-   * @param product.vendor - Vendor name
-   * @param product.productType - Product type
-   * @param product.tags - Comma-separated tags
-   * @param product.status - Status: "ACTIVE", "DRAFT", "ARCHIVED"
-   * @returns Created product object
-   *
-   * @invalidates products/*
-   */
   async createProduct(product: {
     title: string;
     descriptionHtml?: string;
     vendor?: string;
     productType?: string;
-    tags?: string;
+    tags?: string[];
     status?: string;
+    price: string;
   }): Promise<any> {
-    const result = await this.callTool("createProduct", product);
-    // Invalidate product caches after mutation
-    cache.invalidatePattern(/^products/);
+    const { price, ...createInput } = product;
+    const result = await this.callTool("create-product", createInput);
+    this.cache.invalidatePattern(/^products/);
+
+    const createdProduct = result?.product ?? result;
+    const productId = createdProduct?.id;
+    if (typeof productId !== "string" || productId.length === 0) {
+      throw new Error(
+        `Shopify product creation returned no stable product ID, so price ${price} could not be assigned or verified. ` +
+        "The create outcome may be ambiguous; do not retry automatically."
+      );
+    }
+
+    try {
+      const createdSnapshot = await this.callTool("get-product-by-id", { productId });
+      const createdSnapshotProduct = createdSnapshot?.product ?? createdSnapshot;
+      const variants = Array.isArray(createdSnapshotProduct?.variants)
+        ? createdSnapshotProduct.variants
+        : [];
+      if (variants.length !== 1) {
+        throw new Error(`expected exactly one default variant, received ${variants.length}`);
+      }
+
+      const variantId = variants[0]?.id;
+      if (typeof variantId !== "string" || variantId.length === 0) {
+        throw new Error("the default variant had no stable ID");
+      }
+
+      await this.callTool("manage-product-variants", {
+        productId,
+        variants: [{ id: variantId, price }],
+      });
+      this.cache.invalidatePattern(/^products?/);
+
+      const verifiedSnapshot = await this.callTool("get-product-by-id", { productId });
+      const verifiedProduct = verifiedSnapshot?.product ?? verifiedSnapshot;
+      const verifiedVariants: Array<{ id?: unknown; price?: unknown }> = Array.isArray(verifiedProduct?.variants)
+        ? verifiedProduct.variants
+        : [];
+      const verifiedVariant = verifiedVariants.find((variant) => variant?.id === variantId);
+      const verifiedPrice = normalizeProviderPrice(verifiedVariant?.price);
+      if (verifiedPrice !== price) {
+        throw new Error(`read-back price was ${String(verifiedPrice)}, expected ${price}`);
+      }
+
+      return {
+        ...result,
+        priceAssignment: {
+          productId,
+          variantId,
+          price,
+          verified: true,
+        },
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Shopify product ${productId} was created, but its ${price} price was not verified: ${message}. ` +
+        "Do not retry automatically; inspect that exact product and variant first."
+      );
+    }
+  }
+
+  async updateProduct(product: UpdateProductInput): Promise<ShopifyToolResult> {
+    const result = await this.callTool("update-product", product);
+    this.cache.invalidatePattern(/^products?/);
     return result;
   }
 
-  // ============================================
-  // CUSTOMER OPERATIONS
-  // ============================================
+  async getShopInfo(): Promise<ShopifyToolResult> {
+    return this.callTool("get-shop-info", {});
+  }
 
-  /**
-   * Lists customers with optional search.
-   *
-   * @param options - Filter options
-   * @param options.searchQuery - Search query (name, email, etc.)
-   * @param options.limit - Maximum customers to return
-   * @returns Array of customer objects
-   *
-   * @cached TTL: 15 minutes
-   *
-   * @example
-   * const customers = await client.getCustomers({ searchQuery: "john@example.com" });
-   */
-  async getCustomers(options?: { searchQuery?: string; limit?: number }): Promise<any> {
+  async getProductEvents(
+    productId: string,
+    options?: { first?: number; after?: string; query?: string }
+  ): Promise<ShopifyToolResult> {
+    return this.callTool("get-product-events", {
+      productId,
+      ...(options?.first !== undefined ? { first: options.first } : {}),
+      ...(options?.after ? { after: options.after } : {}),
+      ...(options?.query ? { query: options.query } : {}),
+    });
+  }
+
+  async getFiles(options?: {
+    first?: number;
+    after?: string;
+    query?: string;
+    reverse?: boolean;
+  }): Promise<ShopifyToolResult> {
+    return this.callTool("get-files", {
+      ...(options?.first !== undefined ? { first: options.first } : {}),
+      ...(options?.after ? { after: options.after } : {}),
+      ...(options?.query ? { query: options.query } : {}),
+      ...(options?.reverse !== undefined ? { reverse: options.reverse } : {}),
+    });
+  }
+
+  async uploadFile(input: ShopifyFileUploadInput): Promise<ShopifyToolResult> {
+    return this.callTool("file-upload", {
+      filePath: input.filePath,
+      ...(input.filename ? { filename: input.filename } : {}),
+      mimeType: input.mimeType,
+      contentType: input.contentType,
+      ...(input.alt !== undefined ? { alt: input.alt } : {}),
+      ...(input.duplicateResolutionMode
+        ? { duplicateResolutionMode: input.duplicateResolutionMode }
+        : {}),
+      dryRun: input.dryRun ?? true,
+      ...(input.confirmation ? { confirmation: input.confirmation } : {}),
+    });
+  }
+
+  async getShopSettings(): Promise<ShopifyToolResult> {
+    return this.callTool("get-shop-settings", {});
+  }
+
+  async getAppScopes(): Promise<ShopifyToolResult> {
+    return this.callTool("get-app-scopes", {});
+  }
+
+  async getWebPixel(id?: string): Promise<ShopifyToolResult> {
+    return this.callTool("get-web-pixel", id ? { id } : {});
+  }
+
+  async getThemes(options?: {
+    first?: number;
+    after?: string;
+    roles?: Array<"MAIN" | "UNPUBLISHED" | "DEMO" | "DEVELOPMENT" | "ARCHIVED" | "LOCKED">;
+    names?: string[];
+    reverse?: boolean;
+  }): Promise<ShopifyToolResult> {
+    return this.callTool("get-themes", {
+      ...(options?.first !== undefined ? { first: options.first } : {}),
+      ...(options?.after ? { after: options.after } : {}),
+      ...(options?.roles ? { roles: options.roles } : {}),
+      ...(options?.names ? { names: options.names } : {}),
+      ...(options?.reverse !== undefined ? { reverse: options.reverse } : {}),
+    });
+  }
+
+
+  async getCustomers(options?: {
+    searchQuery?: string;
+    limit?: number;
+    since?: string;
+    after?: string;
+  }): Promise<any> {
     const cacheKey = createCacheKey("customers", {
       search: options?.searchQuery,
       limit: options?.limit,
+      since: options?.since,
+      after: options?.after,
     });
 
-    return cache.getOrFetch(
+    return this.cache.getOrFetch(
       cacheKey,
       async () => {
+        const sinceFilter = options?.since ? `updated_at:>=${options.since}` : undefined;
+        const mergedSearch = [options?.searchQuery, sinceFilter].filter(Boolean).join(" ") || undefined;
         const args: Record<string, any> = {};
-        if (options?.searchQuery) args.searchQuery = options.searchQuery;
+        if (mergedSearch) args.searchQuery = mergedSearch;
         if (options?.limit) args.limit = options.limit;
+        if (options?.after) args.after = options.after;
         return this.callTool("get-customers", args);
       },
       { ttl: TTL.FIFTEEN_MINUTES, bypassCache: this.cacheDisabled }
     );
   }
 
-  /**
-   * Updates a customer's details.
-   *
-   * @param customerId - Shopify customer ID
-   * @param updates - Fields to update
-   * @returns Updated customer object
-   *
-   * @invalidates customer/*
-   */
   async updateCustomer(customerId: string, updates: {
     firstName?: string;
     lastName?: string;
@@ -307,24 +954,14 @@ export class ShopifyMCPClient {
     taxExempt?: boolean;
   }): Promise<any> {
     const result = await this.callTool("update-customer", { id: customerId, ...updates });
-    // Invalidate customer caches after mutation
-    cache.invalidatePattern(/^customer/);
+    this.cache.invalidatePattern(/^customer/);
     return result;
   }
 
-  /**
-   * Gets orders for a specific customer.
-   *
-   * @param customerId - Shopify customer ID
-   * @param limit - Maximum orders to return
-   * @returns Array of order objects
-   *
-   * @cached TTL: 5 minutes
-   */
   async getCustomerOrders(customerId: string, limit?: number): Promise<any> {
     const cacheKey = createCacheKey("customer_orders", { id: customerId, limit });
 
-    return cache.getOrFetch(
+    return this.cache.getOrFetch(
       cacheKey,
       async () => {
         const args: Record<string, any> = { customerId };
@@ -335,79 +972,50 @@ export class ShopifyMCPClient {
     );
   }
 
-  // ============================================
-  // ORDER OPERATIONS
-  // ============================================
 
-  /**
-   * Lists orders with optional filtering and pagination.
-   *
-   * @param options - Filter and pagination options
-   * @param options.status - Filter by status
-   * @param options.limit - Maximum orders to return (max 250)
-   * @param options.sortKey - Sort field (e.g., "CREATED_AT", "UPDATED_AT")
-   * @param options.reverse - Reverse sort order
-   * @param options.after - Pagination cursor
-   * @param options.query - Query filter (e.g., "created_at:>2025-01-01")
-   * @returns Orders with pagination info
-   *
-   * @cached TTL: 5 minutes
-   *
-   * @example
-   * const { orders, pageInfo } = await client.getOrders({ status: "unfulfilled", limit: 50 });
-   */
   async getOrders(options?: {
-    status?: string;
+    status?: "any" | "open" | "closed" | "cancelled";
     limit?: number;
     sortKey?: string;
     reverse?: boolean;
-    after?: string;  // Pagination cursor
-    query?: string;  // Query filter (e.g., "created_at:>2025-01-01")
+    after?: string;
+    query?: string;
+    since?: string;
   }): Promise<any> {
+    const sinceClause = options?.since ? `updated_at:>=${options.since}` : undefined;
+    const mergedQuery = [options?.query, sinceClause].filter(Boolean).join(" ") || undefined;
+
     const cacheKey = createCacheKey("orders", {
       status: options?.status,
       limit: options?.limit,
       sortKey: options?.sortKey,
       reverse: options?.reverse,
       after: options?.after,
-      query: options?.query,
+      query: mergedQuery,
     });
 
-    return cache.getOrFetch(
+    return this.cache.getOrFetch(
       cacheKey,
       async () => {
         const args: Record<string, any> = {};
         if (options?.status) args.status = options.status;
-        if (options?.limit) args.first = options.limit;  // API uses 'first' not 'limit'
+        if (options?.limit) args.limit = options.limit;
         if (options?.sortKey) args.sortKey = options.sortKey;
         if (options?.reverse !== undefined) args.reverse = options.reverse;
         if (options?.after) args.after = options.after;
-        if (options?.query) args.query = options.query;
+        if (mergedQuery) args.query = mergedQuery;
         return this.callTool("get-orders", args);
       },
       { ttl: TTL.FIVE_MINUTES, bypassCache: this.cacheDisabled }
     );
   }
 
-  /**
-   * Gets all orders with automatic pagination.
-   *
-   * Not cached due to potential size. Use with caution.
-   *
-   * @param options - Filter options
-   * @param options.status - Filter by status
-   * @param options.sortKey - Sort field
-   * @param options.reverse - Reverse sort order
-   * @param options.query - Query filter
-   * @param options.maxPages - Safety limit (default: 10, max 2500 orders)
-   * @returns Object with orders array, count, and hasMore flag
-   */
   async getAllOrders(options?: {
-    status?: string;
+    status?: "any" | "open" | "closed" | "cancelled";
     sortKey?: string;
     reverse?: boolean;
     query?: string;
-    maxPages?: number;  // Safety limit, default 10 (2500 orders max)
+    maxPages?: number;
   }): Promise<{ orders: any[]; totalFetched: number; hasMore: boolean }> {
     const allOrders: any[] = [];
     let cursor: string | undefined = undefined;
@@ -418,23 +1026,21 @@ export class ShopifyMCPClient {
     while (hasNextPage && pageCount < maxPages) {
       const result = await this.getOrders({
         status: options?.status,
-        limit: 250,  // Max per request
+        limit: 250,
         sortKey: options?.sortKey ?? "CREATED_AT",
-        reverse: options?.reverse ?? true,  // Newest first by default
+        reverse: options?.reverse ?? true,
         after: cursor,
         query: options?.query,
       });
 
-      // Handle response - may be array or object with pageInfo
       if (Array.isArray(result)) {
         allOrders.push(...result);
-        hasNextPage = false;  // No pagination info, assume done
+        hasNextPage = false;
       } else if (result.orders) {
         allOrders.push(...result.orders);
         hasNextPage = result.pageInfo?.hasNextPage ?? false;
         cursor = result.pageInfo?.endCursor;
       } else {
-        // Unknown format, treat as single page
         allOrders.push(result);
         hasNextPage = false;
       }
@@ -449,100 +1055,77 @@ export class ShopifyMCPClient {
     };
   }
 
-  /**
-   * Retrieves a single order by ID.
-   *
-   * @param orderId - Shopify order ID (numeric or GID)
-   * @returns Order object with full details
-   *
-   * @cached TTL: 5 minutes
-   */
   async getOrderById(orderId: string): Promise<any> {
     const cacheKey = createCacheKey("order", { id: orderId });
 
-    return cache.getOrFetch(
+    return this.cache.getOrFetch(
       cacheKey,
       () => this.callTool("get-order-by-id", { orderId }),
       { ttl: TTL.FIVE_MINUTES, bypassCache: this.cacheDisabled }
     );
   }
 
-  /**
-   * Updates tracking information on an existing fulfillment.
-   *
-   * @param fulfillmentId - Fulfillment GID (gid://shopify/Fulfillment/...)
-   * @param trackingNumber - New tracking number
-   * @param options - Optional tracking details
-   * @param options.trackingCompany - Carrier name (e.g., UPS, Royal Mail)
-   * @param options.trackingUrl - Tracking URL
-   * @param options.notifyCustomer - Send email to customer (default: false)
-   * @returns Updated fulfillment object
-   *
-   * @invalidates order/*
-   */
   async updateFulfillmentTracking(
     fulfillmentId: string,
-    trackingNumber: string,
-    options?: {
+    options: {
+      trackingNumber?: string;
       trackingCompany?: string;
       trackingUrl?: string;
       notifyCustomer?: boolean;
+      clear?: boolean;
     }
   ): Promise<any> {
     const result = await this.callTool("update-fulfillment-tracking", {
       fulfillmentId,
-      trackingNumber,
       ...options,
     });
-    cache.invalidatePattern(/^order/);
+    this.invalidateOrderLifecycleCaches();
     return result;
   }
 
-  /**
-   * Creates a fulfillment with tracking for an order.
-   *
-   * @param orderNumber - Order number (e.g., "1234" or "#ORD1234")
-   * @param trackingNumber - Tracking number
-   * @param options - Optional fulfillment details
-   * @param options.trackingCompany - Carrier name (default: UPS)
-   * @param options.trackingUrl - Tracking URL (auto-generated for UPS if omitted)
-   * @param options.notifyCustomer - Send email to customer (default: false)
-   * @param options.lineItems - Specific items to fulfill (omit for all)
-   * @returns Fulfillment result
-   *
-   * @invalidates order/*
-   */
+  async closeReturn(returnId: string, dryRun: boolean): Promise<any> {
+    const result = await this.callTool("close-return", { returnId, dryRun });
+    this.invalidateOrderLifecycleCaches();
+    return result;
+  }
+
   async createFulfillment(
     orderNumber: string,
-    trackingNumber: string,
+    trackingNumber?: string,
     options?: {
       trackingCompany?: string;
       trackingUrl?: string;
       notifyCustomer?: boolean;
-      lineItems?: Array<{ sku: string; quantity: number }>;
+      lineItems?: Array<{ lineItemId?: string; sku?: string; quantity: number }>;
     }
   ): Promise<any> {
     const result = await this.callTool("create-fulfillment", {
       orderNumber,
-      trackingNumber,
+      ...(trackingNumber ? { trackingNumber } : {}),
       ...options,
     });
-    cache.invalidatePattern(/^order/);
+    this.invalidateOrderLifecycleCaches();
     return result;
   }
 
-  /**
-   * Creates a return for a fulfilled order.
-   *
-   * @param orderNumber - Order number
-   * @param options - Optional return details
-   * @param options.lineItems - Specific items to return by SKU (omit for all)
-   * @param options.returnReason - Return reason enum (default: OTHER)
-   * @param options.notifyCustomer - Send email to customer (default: false)
-   * @returns Return result with ID, status, and returned items
-   *
-   * @invalidates order/*
-   */
+  async getFulfillmentOrders(orderIdOrGid: string): Promise<any> {
+    const cacheKey = createCacheKey("fulfillment-orders", { id: orderIdOrGid });
+
+    return this.cache.getOrFetch(
+      cacheKey,
+      () => this.callTool("get-fulfillment-orders", { orderId: orderIdOrGid }),
+      { ttl: TTL.FIVE_MINUTES, bypassCache: this.cacheDisabled }
+    );
+  }
+
+  async releaseFulfillmentHold(fulfillmentOrderId: string): Promise<any> {
+    const result = await this.callTool("release-fulfillment-hold", {
+      fulfillmentOrderId,
+    });
+    this.invalidateOrderLifecycleCaches();
+    return result;
+  }
+
   async createReturn(
     orderNumber: string,
     options?: {
@@ -555,22 +1138,10 @@ export class ShopifyMCPClient {
       orderNumber,
       ...options,
     });
-    cache.invalidatePattern(/^order/);
+    this.invalidateOrderLifecycleCaches();
     return result;
   }
 
-  /**
-   * Attaches return shipping/tracking to a Shopify return.
-   *
-   * @param returnId - Return GID (gid://shopify/Return/...)
-   * @param trackingNumber - Tracking number for the return shipment
-   * @param options - Optional tracking details
-   * @param options.trackingCompany - Carrier name (default: UPS)
-   * @param options.trackingUrl - Tracking URL (auto-generated for UPS if omitted)
-   * @returns Reverse delivery result with ID and tracking info
-   *
-   * @invalidates order/*
-   */
   async createReverseDelivery(
     returnId: string,
     trackingNumber: string,
@@ -585,25 +1156,10 @@ export class ShopifyMCPClient {
       trackingNumber,
       ...options,
     });
-    cache.invalidatePattern(/^order/);
+    this.invalidateOrderLifecycleCaches();
     return result;
   }
 
-  /**
-   * Updates an order's details.
-   *
-   * @param orderId - Shopify order ID
-   * @param updates - Fields to update
-   * @param updates.tags - Comma-separated tags
-   * @param updates.email - Customer email
-   * @param updates.note - Order note
-   * @param updates.customAttributes - Custom attributes
-   * @param updates.metafields - Metafields
-   * @param updates.shippingAddress - Shipping address
-   * @returns Updated order object
-   *
-   * @invalidates order/*
-   */
   async updateOrder(orderId: string, updates: {
     tags?: string;
     email?: string;
@@ -613,29 +1169,11 @@ export class ShopifyMCPClient {
     shippingAddress?: any;
   }): Promise<any> {
     const result = await this.callTool("update-order", { id: orderId, ...updates });
-    // Invalidate order caches after mutation
-    cache.invalidatePattern(/^order/);
+    this.cache.invalidatePattern(/^order/);
     return result;
   }
 
-  // ============================================
-  // UTILITY
-  // ============================================
 
-  /**
-   * Updates tracking/label on an existing reverse delivery.
-   *
-   * @param reverseDeliveryId - Reverse delivery GID (gid://shopify/ReverseDelivery/...)
-   * @param trackingNumber - New tracking number
-   * @param options - Optional tracking details
-   * @param options.trackingCompany - Carrier name (default: UPS)
-   * @param options.trackingUrl - Tracking URL (auto-generated for UPS if omitted)
-   * @param options.labelUrl - URL of the return label image
-   * @param options.notifyCustomer - Send notification email (default: false)
-   * @returns Updated reverse delivery with tracking info
-   *
-   * @invalidates order/*
-   */
   async updateReverseDeliveryShipping(
     reverseDeliveryId: string,
     trackingNumber: string,
@@ -651,18 +1189,238 @@ export class ShopifyMCPClient {
       trackingNumber,
       ...options,
     });
-    cache.invalidatePattern(/^order/);
+    this.invalidateOrderLifecycleCaches();
     return result;
   }
 
-  /**
-   * Gets the configured store domain.
-   *
-   * @returns Store domain (e.g., "mystore.myshopify.com")
-   */
+  async disposeReverseFulfillmentOrder(
+    dispositionInputs: ReverseFulfillmentDispositionInput[],
+    options?: {
+      dryRun?: boolean;
+      confirmation?: "DISPOSE_REVERSE_FULFILLMENT_ORDER_ITEMS";
+    }
+  ): Promise<ShopifyToolResult> {
+    const result = await this.callTool("reverse-fulfillment-order-dispose", {
+      dispositionInputs,
+      dryRun: options?.dryRun ?? true,
+      ...(options?.confirmation ? { confirmation: options.confirmation } : {}),
+    });
+    if (result?.dryRun === false) {
+      this.invalidateOrderLifecycleCaches();
+    }
+    return result;
+  }
+
   getStoreDomain(): string {
     return this.config.storeDomain;
   }
+
+
+  private static readonly REST_API_VERSION = "2026-04";
+
+  private getAdminCredentials(): { accessToken: string; storeDomain: string } {
+    const credentials = resolveShopifyAdminCredentials(this.config);
+    return { accessToken: credentials.accessToken, storeDomain: credentials.storeDomain };
+  }
+
+  private getAdminAccessToken(): string {
+    return this.getAdminCredentials().accessToken;
+  }
+
+  private getAdminRestBase(): string {
+    const { storeDomain } = this.getAdminCredentials();
+    return `https://${storeDomain}/admin/api/${ShopifyMCPClient.REST_API_VERSION}`;
+  }
+
+  private async adminRestGet(
+    path: string,
+    query?: Record<string, string | number | undefined>
+  ): Promise<{ body: any; nextPageInfo: string | null }> {
+    const token = this.getAdminAccessToken();
+    const base = this.getAdminRestBase();
+    const queryParams = new URLSearchParams();
+    if (query) {
+      for (const [key, value] of Object.entries(query)) {
+        if (value === undefined || value === null || value === "") continue;
+        queryParams.set(key, String(value));
+      }
+    }
+    const qs = queryParams.toString();
+    const url = `${base}/${path}${qs ? `?${qs}` : ""}`;
+
+    const fetchImpl: RestFetch = this.injectedRestFetch ?? (fetch as unknown as RestFetch);
+    const response = await fetchImpl(url, {
+      method: "GET",
+      headers: {
+        "X-Shopify-Access-Token": token,
+        "Accept": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`Shopify Admin REST ${path} failed: ${response.status} ${response.statusText} ${text}`.trim());
+    }
+
+    const body = await response.json();
+    const linkHeader = response.headers.get("Link") ?? response.headers.get("link");
+    const nextPageInfo = extractNextPageInfo(linkHeader);
+    return { body, nextPageInfo };
+  }
+
+  private async adminRestPut(
+    path: string,
+    payload: unknown
+  ): Promise<{ body: any }> {
+    const token = this.getAdminAccessToken();
+    const base = this.getAdminRestBase();
+    const url = `${base}/${path}`;
+
+    const fetchImpl: RestFetch = this.injectedRestFetch ?? (fetch as unknown as RestFetch);
+    const response = await fetchImpl(url, {
+      method: "PUT",
+      headers: {
+        "X-Shopify-Access-Token": token,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`Shopify Admin REST PUT ${path} failed: ${response.status} ${response.statusText} ${text}`.trim());
+    }
+
+    const body = await response.json();
+    return { body };
+  }
+
+  async listBlogs(options?: { limit?: number; pageInfo?: string }): Promise<{
+    blogs: any[];
+    nextPageInfo: string | null;
+  }> {
+    const cacheKey = createCacheKey("blogs", {
+      limit: options?.limit,
+      pageInfo: options?.pageInfo,
+    });
+
+    return this.cache.getOrFetch(
+      cacheKey,
+      async () => {
+        const query: Record<string, string | number | undefined> = {};
+        if (options?.limit) query.limit = options.limit;
+        if (options?.pageInfo) query.page_info = options.pageInfo;
+        const { body, nextPageInfo } = await this.adminRestGet("blogs.json", query);
+        const blogs = Array.isArray(body?.blogs) ? body.blogs : [];
+        return { blogs, nextPageInfo };
+      },
+      { ttl: TTL.HOUR, bypassCache: this.cacheDisabled }
+    );
+  }
+
+  async listArticles(blogId: string, options?: {
+    limit?: number;
+    since?: string;
+    pageInfo?: string;
+  }): Promise<{ articles: any[]; nextPageInfo: string | null }> {
+    const cacheKey = createCacheKey("articles", {
+      blogId,
+      limit: options?.limit,
+      since: options?.since,
+      pageInfo: options?.pageInfo,
+    });
+
+    return this.cache.getOrFetch(
+      cacheKey,
+      async () => {
+        const query: Record<string, string | number | undefined> = {};
+        if (options?.limit) query.limit = options.limit;
+        if (options?.since) query.updated_at_min = options.since;
+        if (options?.pageInfo) query.page_info = options.pageInfo;
+        const { body, nextPageInfo } = await this.adminRestGet(`blogs/${blogId}/articles.json`, query);
+        const articles = Array.isArray(body?.articles) ? body.articles : [];
+        return { articles, nextPageInfo };
+      },
+      { ttl: TTL.FIFTEEN_MINUTES, bypassCache: this.cacheDisabled }
+    );
+  }
+
+  async getArticleById(articleId: string): Promise<any> {
+    const cacheKey = createCacheKey("article", { id: articleId });
+
+    return this.cache.getOrFetch(
+      cacheKey,
+      async () => {
+        const { body } = await this.adminRestGet(`articles/${articleId}.json`);
+        return body?.article ?? body;
+      },
+      { ttl: TTL.FIFTEEN_MINUTES, bypassCache: this.cacheDisabled }
+    );
+  }
+
+  async getArticleRawById(articleId: string): Promise<any> {
+    const { body } = await this.adminRestGet(`articles/${articleId}.json`);
+    return body?.article ?? body;
+  }
+
+  async updateArticle(articleId: string, updates: {
+    bodyHtml?: string;
+    title?: string;
+    summaryHtml?: string;
+  }): Promise<any> {
+    const articlePayload: Record<string, unknown> = { id: Number(articleId) };
+    if (updates.bodyHtml !== undefined) articlePayload.body_html = updates.bodyHtml;
+    if (updates.title !== undefined) articlePayload.title = updates.title;
+    if (updates.summaryHtml !== undefined) articlePayload.summary_html = updates.summaryHtml;
+
+    const { body } = await this.adminRestPut(
+      `articles/${articleId}.json`,
+      { article: articlePayload }
+    );
+    this.cache.invalidatePattern(/^article/);
+    this.cache.invalidatePattern(/^articles/);
+    return body?.article ?? body;
+  }
+
+  async getCollectionRawById(collectionId: string): Promise<any> {
+    const { body } = await this.adminRestGet(`collections/${collectionId}.json`);
+    return body?.collection ?? body;
+  }
+
+  async updateCollectionDescription(
+    collectionId: string,
+    kind: "custom" | "smart",
+    bodyHtml: string
+  ): Promise<any> {
+    const endpointKey = kind === "smart" ? "smart_collection" : "custom_collection";
+    const path = kind === "smart"
+      ? `smart_collections/${collectionId}.json`
+      : `custom_collections/${collectionId}.json`;
+    const payload = {
+      [endpointKey]: { id: Number(collectionId), body_html: bodyHtml },
+    };
+    const { body } = await this.adminRestPut(path, payload);
+    this.cache.invalidatePattern(/^collection/);
+    return body?.[endpointKey] ?? body;
+  }
+
+}
+
+function extractNextPageInfo(linkHeader: string | null): string | null {
+  if (!linkHeader) return null;
+  const links = linkHeader.split(/,(?![^<]*>)/);
+  for (const link of links) {
+    const match = link.match(/<([^>]+)>\s*;\s*rel="?next"?/i);
+    if (!match) continue;
+    try {
+      const url = new URL(match[1]!);
+      const pageInfo = url.searchParams.get("page_info");
+      if (pageInfo) return pageInfo;
+    } catch {
+    }
+  }
+  return null;
 }
 
 export default ShopifyMCPClient;

@@ -1,5 +1,6 @@
 {
   "name": "shopify-order-manager",
-  "version": "1.3.3",
-  "description": "Dedicated agent for Shopify e-commerce operations with isolated MCP access"
+  "version": "1.11.0",
+  "description": "Dedicated agent for Shopify e-commerce operations with isolated MCP access",
+  "repository": "https://github.com/bigl34/claude-code-plugin-shopify"
 }
